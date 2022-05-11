@@ -1,0 +1,262 @@
+---
+title: 'Annexe : code commenté'
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+Ce notebook regroupe l'ensemble du code commenté pour le projet de séries temporelles. Se repporter aux questions correspondantes dans le rapport plus haut pour avoir l'analyse et l'interprétation des résultats. Les pages 9 à 19 rapportent les résultats de l'ensemble des tests pour les sous-modèles, ces pages peuvent donc être sautées lors de la lecture.
+
+```{r}
+#Packages requis
+require(fUnitRoots)
+require(aTSA)
+require(astsa)
+
+#Importations des données
+data=read.csv('valeurs_mensuelles.csv',sep=";")
+xp.source <- ts(data[[2]]) #données dans la 2e colonne
+L <- length(xp.source)
+xp <- ts(as.numeric(xp.source[4:L])) #4 premiers éléments h-s
+```
+
+#### Q.2 & 3
+```{r out.width = "75%"}
+plot(xp,xlab="Obs") #Représentation de la série
+```
+```{r out.width = "75%"}
+#La série n'a pas l'air stationnaire, on la différencie une fois 
+xpd <- diff(xp,1)
+plot(xpd,xlab="Obs")
+```
+```{r out.width = "75%"}
+acf(xpd) #Fonction d'autocorrélation totale
+pacf(xpd) #Fonction d'autocorrélation partielle 
+```
+**Test de stationnarité**
+```{r}
+# Test de racine unité
+adfTest(xpd,lags=0,type="c") #ADF
+stationary.test(xpd,method="pp",type="Z_tau")
+#p-value proche de 0 : on rejette l'hypothèse nulle de racine unité
+```
+**Recherche des ordres p et q**
+```{r out.width = "75%"}
+xpdc <- xpd - mean(xpd) #on centre la série
+plot(xpdc,xlab="Obs")
+acf(xpdc) #q=2
+pacf(xpdc) #p=9
+```
+```{r}
+#Si xpdc suit un ARMA elle suit au plus un ARMA(p=9,q=2)
+test92 <- arima(xpdc,order=c(9,0,2),include.mean=FALSE)
+```
+Commentaires : on doit vérifier que le modèle est valide ie que les résidus ne sont pas autocorrélés. On effectue un test de portemanteau avec statistique de Ljung-Box. On vérifie ensuite que le modèle est bien ajusté en étudiant la significativité à 95% des coefficients des ordres les plus élevés.
+
+#### Q.4
+**1.Test d'autocorrélation des résidus**
+```{r}
+Box.test(test92$residuals,lag=12,type="Ljung-Box",fitdf=11)
+# On corrige les degrés de libertés du nombre de régresseurs!p+q=11, 
+#on ne peut effectuer le test pour lag<12
+```
+```{r}
+# On crée une fonction pour tester la validité des différents modèles
+# (H0) : nullité jointe des autocorrélations des résidus
+
+TestAutocorr<-function(var,p,d,q){
+  autocorL<-list()
+  fitdf<-p+q
+  serie<-arima(var,order=c(p,d,q),include.mean=FALSE)
+  rej<-0
+  for (i in c(1:20)){
+    if (i<=fitdf) {NA} 
+    else {
+      cat("lag=",i,"pvalue=",Box.test(residuals(serie),lag=i,
+                                      type="Ljung-Box",
+                                      fitdf = fitdf)$p.value,"\n") 
+      rej<-rej+(Box.test(residuals(serie),lag=i,fitdf = fitdf)$p.value<0.05)}
+  }
+  if (rej>0) cat("=> Modèle non valide : l'absence d'autocorrélation 
+                      des résidus est rejetée à 95%.\n") 
+  else cat("=> Modèle valide\n")
+}
+TestAutocorr(xpdc,9,0,2) 
+#le modèle est valide car l'hypothèse nulle n'est jamais rejetée
+#à 95% (pvalue<0.05) jusqu'à 20 retards
+```
+
+**2.Test de significativité**
+```{r}
+#On étudie la significativité des coefficients pour les ordres les plus élevés:
+TestSignificatif <- function(serie,p,d,q){
+  var<-arima(serie,order=c(p,d,q),include.mean=FALSE)
+  coef<-var$coef
+  se<-sqrt(diag(var$var.coef))
+  t<-abs(coef/se)
+  t2<-t>1.96  #on rejette l'hypothèse nulle du test de Student ?
+  sig<-c(t2[p],t2[p+q])  
+    #On regarde si les coefficients des plus grands ordres sont significatifs
+  res<-t2[p]+t2[p+q]
+  
+  #Résultats d'intérêt
+  coef_est<-c(coef[p],coef[p+q])
+  se_est<-c(se[p],se[p+q])
+  tstat<-c(t[p],t[p+q])
+  pval <- (1-pnorm(abs(tstat)))*2
+  
+  cat("2/ Test de nullité des coefficients des des ordres les plus élevés :\n")
+  print(rbind(coef_est,se_est,tstat,pval))
+  cat(" \n")
+  cat("Significativité au seuil de 95% \n")
+  print(sig)
+  if (res!=2){cat("=> Modèle rejeté : au moins l'un des coefficients des ordres 
+                  les plus élevés n'est pas signififcatif au seuil de 95%\n")} 
+  else{cat("=> Modèle bien ajusté\n")}
+}
+TestSignificatif(xpdc,9,0,2)
+```
+On définit donc une fonction **arimafit** qui permet d'étudier les sous-modèles.
+```{r}
+arimafit<-function(serie,p,d,q){
+  cat("Try ARIMA(",p,",",d,",",q,")\n")
+  cat("\n")
+  cat("1/ Test d'absence absence d'autocorrélation des résidus [Ljung-Box] :\n")
+  TestAutocorr(serie,p,d,q)
+  cat(" \n")
+  TestSignificatif(serie,p,d,q)
+}
+```
+
+```{r}
+#Test des sous-modèles
+arimafit(xpdc,9,0,2) 
+arimafit(xpdc,8,0,2) 
+arimafit(xpdc,7,0,2) 
+arimafit(xpdc,6,0,2) 
+arimafit(xpdc,5,0,2) 
+arimafit(xpdc,4,0,2) 
+arimafit(xpdc,3,0,2) 
+arimafit(xpdc,2,0,2) #V
+arimafit(xpdc,1,0,2) 
+
+arimafit(xpdc,9,0,1) 
+arimafit(xpdc,8,0,1) 
+arimafit(xpdc,7,0,1) 
+arimafit(xpdc,6,0,1) 
+arimafit(xpdc,5,0,1) 
+arimafit(xpdc,4,0,1) 
+arimafit(xpdc,3,0,1) 
+arimafit(xpdc,2,0,1) #V
+arimafit(xpdc,1,0,1) 
+```
+
+Seul deux modèles sont bien ajustés et valides.
+```{r}
+ar2ma2<-arima(xpdc,order=c(2,0,2),include.mean=FALSE)
+ar2ma1<-arima(xpdc,order=c(2,0,1),include.mean=FALSE)
+```
+On implémente un critère d'information pour choisir un modèle.
+```{r}
+#Critères d'informations pour choisir le modèle.
+minInfo<-function(){
+  l<-c("ar2ma2","ar2ma1")
+  aic_choix<-NA
+  bic_choix<-NA
+  minAIC<-Inf
+  minBIC<-Inf
+  for (mod in l){
+    cat(mod,"|","AIC :",AIC(get(mod)),"|","BIC :",BIC(get(mod)),"\n")
+    if (AIC(get(mod))<minAIC){
+      aic_choix<-mod
+      minAIC<-AIC(get(mod))
+    } else NA
+    if (BIC(get(mod))<minBIC){
+      bic_choix<-mod
+      minBIC<-BIC(get(mod))
+    } else NA
+  }
+  cat("\n")
+  cat("=> Choix AIC :",aic_choix,"\n")
+  cat("=> Choix BIC :",bic_choix,"\n")
+}
+minInfo()
+```
+Malheureusement les critères AIC et BIC ne s'accordent pas sur le modèel à choisir.
+On décide alors de garder celui qui donne la meilleure prévision sur l’échantillon.
+```{r}
+#calcul du R^2 ajusté
+r2_aj<-function(model){
+  p=model$arma[1]
+  q=model$arma[2]
+  ss_res <- sum(model$residuals^2) #somme des résidus au carré
+  ss_tot <- sum(xpdc[-c(1:max(p,q))]^2) 
+            #somme des observations de l’´echantillon au carré
+  n <- model$nobs-max(p,q) #taille de l’échantillon
+  adj_r2 <- 1-(ss_res/(n-p-q-1))/(ss_tot/(n-1)) #r2 ajusté
+  cat("R^2 ajusté : ",adj_r2,"\n")
+  cat("\n")
+}
+r2_aj(ar2ma1)
+r2_aj(ar2ma2)
+```
+On choisit le modèle avec le R^2 ajusté le plus élevé : choix du modèle ar2ma2.
+
+#### Q.5
+```{r}
+verifit<-function(serie,p,d,q){
+  var<-arima(serie,order=c(p,d,q),include.mean=FALSE)
+  coef_est<-var$coef
+  se_est<-sqrt(diag(var$var.coef))
+  tstat<-abs(coef_est/se_est)
+  pvalue<-c()
+  #sign<-(tstat>1.96)==1  #on rejette l'hypothèse nulle du test de Student
+  for (coef in tstat){
+    pvalue<-append(pvalue,pval <- (1-pnorm(abs(coef)))*2) 
+    #calcul de la pvalue pour le test de student (test bilatéral)
+  }
+  cat("Modèle estimé \n")
+  cat("\n")
+  print(rbind(coef_est,se_est,tstat,pvalue))
+}
+verifit(xpdc,2,0,2) #Tous les coefficients sont significatifs au seuil de 95%
+```
+
+#### Q.6 & 7
+```{r out.width = "75%"}
+#résidus du modèle estimé
+res22<-ar2ma2$residuals
+plot(res22)
+acf(res22) #autocorrélations totales
+pacf(res22) #autocorrélations partielles
+```
+```{r}
+#Test de normalité des résidus
+qqnorm(res22)
+qqline(res22)
+```
+
+#### Q.8
+Question ouverte :
+```{r}
+#Prédictions et représentation graphique 
+pred<-predict(ar2ma2,2)$pred
+eps<-mean((res22)^2)-mean(res22)^2
+
+plot(xpd,xlim=c(350,390),ylim=c(-20,20),xlab="Obs")
+
+#IC à 95% sur X(T+1)
+rect(xleft = 385.5,xright = 386.5,
+     ybottom = as.numeric(pred[1])-sqrt(eps)*qnorm(1-0.05/2,mean=0,sd=1), 
+     ytop = as.numeric(pred[1])+sqrt(eps)*qnorm(1-0.05/2,mean=0,sd=1),col="gray"
+     ,border=NA )
+points(x=386,y=as.numeric(pred[1]),col="blue",pch=16)
+
+#IC à 95% sur X(T+2)
+rect(xleft = 386.5,xright = 387.5,
+     ybottom = as.numeric(pred[2])-sqrt(eps)*qnorm(1-0.05/2,mean=0,sd=1), 
+     ytop = as.numeric(pred[2])+sqrt(eps)*qnorm(1-0.05/2,mean=0,sd=1),col="gray"
+     ,border=NA )
+points(x=387,y=as.numeric(pred[2]),col="blue",pch=16)
+```
